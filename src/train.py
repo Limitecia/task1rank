@@ -111,16 +111,25 @@ def compute_metrics(pred):
     """
     计算 F1-measure 指标，假设目标标签为单词，
     解码预测和真实标签后计算 weighted F1 分数。
+    如果 predictions 是嵌套的（例如包含多个 beam），提取第一个 beam。
     """
     tokenizer = T5Tokenizer.from_pretrained("google/flan-t5-base")
     predictions, labels = pred
+    
+    # 如果 predictions 是嵌套列表，则取第一个 beam
+    if isinstance(predictions, (list, tuple)) and isinstance(predictions[0], (list, tuple)):
+        predictions = [p[0] for p in predictions]
+    
     decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
+    # 将 label 中 -100 替换为 pad_token_id，再解码
     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
     
+    # 将预测与真实文本转换为列表（假设为单词标签），并转为小写
     decoded_preds = [pred.strip().lower() for pred in decoded_preds]
     decoded_labels = [label.strip().lower() for label in decoded_labels]
     
+    from sklearn.metrics import f1_score
     f1 = f1_score(decoded_labels, decoded_preds, average='weighted')
     return {"f1": f1}
 
