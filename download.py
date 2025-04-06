@@ -18,6 +18,7 @@ data = {
 
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
+    
 
 for target, url in data.items():
     download(dest_file_path=target, source_url=url)
