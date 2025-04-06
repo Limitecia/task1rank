@@ -12,12 +12,18 @@ from transformers import (
 from sklearn.metrics import f1_score
 import numpy as np
 
+# Debug 模式标志：True 时只加载部分数据，False 时加载全部数据
+DEBUG_MODE = True
+
 class EmotionCauseDataset(Dataset):
-    def __init__(self, csv_file, tokenizer, max_input_length=512, max_output_length=32):
+    def __init__(self, csv_file, tokenizer, max_input_length=512, max_output_length=32, limit=None):
         # 读取 CSV 文件时指定制表符分隔、跳过格式错误的行，并指定编码
         self.data = pd.read_csv(csv_file, sep="\t", on_bad_lines='skip', encoding='ISO-8859-1')
         # 对列名去除多余空白，确保字段名称准确
         self.data.columns = self.data.columns.str.strip()
+        # 如果设置了 limit，则只取前 limit 行
+        if limit is not None:
+            self.data = self.data.head(limit)
         self.tokenizer = tokenizer
         self.max_input_length = max_input_length
         self.max_output_length = max_output_length
@@ -54,12 +60,17 @@ class EmotionCauseDataset(Dataset):
         
         # 目标文本：优先使用 "emotion_state"，否则尝试 "target"
         if "emotion_state" in row:
-            target_text = str(row["emotion_state"])
+            target_text = str(row["emotion_state"]).strip()
         elif "target" in row:
-            target_text = str(row["target"])
+            target_text = str(row["target"]).strip()
         else:
             print("CSV columns:", list(self.data.columns))
             raise KeyError("CSV文件中缺少目标文本字段，例如 'emotion_state' 或 'target'。")
+        
+        # 如果目标文本为空，则使用默认值 "neutral"
+        if target_text == "":
+            print(f"Warning: Empty target text at index {idx}, setting to 'neutral'.")
+            target_text = "neutral"
         
         # 对 prompt 和目标文本分别进行编码
         input_encodings = self.tokenizer(
@@ -82,6 +93,14 @@ class EmotionCauseDataset(Dataset):
         # 将填充位置标记为 -100，方便计算 loss 时忽略
         labels[labels == self.tokenizer.pad_token_id] = -100
         
+        # 检查如果所有标签都为 -100，则说明目标文本未能生成有效token
+        if torch.all(labels == -100):
+            print(f"Warning: Target text for index {idx} resulted in all pad tokens. Using default label 'neutral'.")
+            default_tokens = self.tokenizer("neutral", max_length=self.max_output_length,
+                                            padding="max_length", truncation=True, return_tensors="pt").input_ids.squeeze()
+            default_tokens[default_tokens == self.tokenizer.pad_token_id] = -100
+            labels = default_tokens
+        
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
@@ -90,47 +109,51 @@ class EmotionCauseDataset(Dataset):
 
 def compute_metrics(pred):
     """
-    计算 F1-measure 指标，假设目标标签为单词，先将模型生成的 token 序列解码为文本字符串，
-    然后与参考答案比较。这里采用 weighted F1 作为示例指标。
+    计算 F1-measure 指标，假设目标标签为单词，
+    解码预测和真实标签后计算 weighted F1 分数。
     """
     tokenizer = T5Tokenizer.from_pretrained("google/flan-t5-base")
     predictions, labels = pred
-    # 解码预测文本
     decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
-    # 将 label 中 -100 替换为 pad_token_id，再解码
     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
     
-    # 将预测与真实文本转换为列表（假设为单词标签），并转为小写
     decoded_preds = [pred.strip().lower() for pred in decoded_preds]
     decoded_labels = [label.strip().lower() for label in decoded_labels]
     
-    # 计算 weighted F1
     f1 = f1_score(decoded_labels, decoded_preds, average='weighted')
     return {"f1": f1}
 
 def main():
     # 模型及输出目录设置
-    model_name = "google/flan-t5-base"  # 使用 Flan-T5-base 模型（250M参数）
+    model_name = "google/flan-t5-base"
     output_dir = "./finetuned_model"
     # CSV 文件路径（预处理阶段生成的文件）
     train_csv = "data/e3_pair_ft/cause-mult-train.csv"
     valid_csv = "data/e3_pair_ft/cause-mult-valid.csv"
     
-    # 训练超参数设置，参照论文：
-    num_train_epochs = 3            # 训练周期：2-3个 epoch
-    per_device_train_batch_size = 8  # 每个设备批次大小 16
+    # 训练超参数设置
+    num_train_epochs = 3
+    per_device_train_batch_size = 8  # 调试模式下使用较小批次
     per_device_eval_batch_size = 8
+
+    # 如果在调试模式下，则只加载部分数据
+    train_limit = 100 if DEBUG_MODE else None
+    valid_limit = 20 if DEBUG_MODE else None
 
     # 加载 tokenizer 和模型
     tokenizer = T5Tokenizer.from_pretrained(model_name)
     model = T5ForConditionalGeneration.from_pretrained(model_name)
     
     # 构造训练和验证数据集
-    train_dataset = EmotionCauseDataset(train_csv, tokenizer)
-    valid_dataset = EmotionCauseDataset(valid_csv, tokenizer)
+    train_dataset = EmotionCauseDataset(train_csv, tokenizer, limit=train_limit)
+    valid_dataset = EmotionCauseDataset(valid_csv, tokenizer, limit=valid_limit)
     
-    # 设置训练参数，同时增加早停和加载最佳模型的配置，并指定 TensorBoard 日志记录
+    # 调试输出：打印第一个样本信息
+    sample = train_dataset[0]
+    print("Sample input_ids:", sample["input_ids"][:10])
+    print("Sample labels:", sample["labels"][:10])
+    
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=num_train_epochs,
@@ -144,12 +167,11 @@ def main():
         evaluation_strategy="epoch",
         save_total_limit=1,
         fp16=True if torch.cuda.is_available() else False,
-        load_best_model_at_end=True,      # 在训练结束时加载验证集上表现最好的模型
-        metric_for_best_model="f1",         # 以 F1 指标作为最佳模型评价依据
-        report_to=["tensorboard"]         # 指定使用 TensorBoard 记录日志
+        load_best_model_at_end=True,
+        metric_for_best_model="f1",
+        report_to=["tensorboard"]
     )
     
-    # 构造 Trainer，并添加早停策略回调
     trainer = Trainer(
         model=model,
         args=training_args,
