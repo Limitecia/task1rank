@@ -119,8 +119,8 @@ def main():
     
     # 训练超参数设置，参照论文：
     num_train_epochs = 3            # 训练周期：2-3个 epoch
-    per_device_train_batch_size = 32  # 每个设备批次大小 16
-    per_device_eval_batch_size = 32
+    per_device_train_batch_size = 8  # 每个设备批次大小 16
+    per_device_eval_batch_size = 8
 
     # 加载 tokenizer 和模型
     tokenizer = T5Tokenizer.from_pretrained(model_name)
