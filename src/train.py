@@ -16,7 +16,7 @@ import numpy as np
 DEBUG_MODE = True
 
 class EmotionCauseDataset(Dataset):
-    def __init__(self, csv_file, tokenizer, max_input_length=512, max_output_length=32, limit=None):
+    def __init__(self, csv_file, tokenizer, max_input_length=256, max_output_length=32, limit=None):
         # 读取 CSV 文件时指定制表符分隔、跳过格式错误的行，并指定编码
         self.data = pd.read_csv(csv_file, sep="\t", on_bad_lines='skip', encoding='ISO-8859-1')
         # 对列名去除多余空白，确保字段名称准确
